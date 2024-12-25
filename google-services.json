@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "597808379271",
+    "project_id": "notify-c1d79",
+    "storage_bucket": "notify-c1d79.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:597808379271:android:98a7cb6cac1e0380894f22",
+        "android_client_info": {
+          "package_name": "com.sayan_13m.chatapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDCEwOcwGm0DUzG1WmUkvZ738ee2d3VxXo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

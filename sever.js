@@ -6,6 +6,13 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
+const fetch = require('node-fetch');
+const admin = require('firebase-admin');
+const serviceAccount = require('./notify-c1d79-firebase-adminsdk-gvfwo-ba78ff991d.json');
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -13,6 +20,16 @@ const port = process.env.PORT || 3000;
 // Middleware
 app.use(bodyParser.json());
 app.use(cors());
+
+let appInfo = {
+  latestVersion: '1.0.0', // Initial version
+  downloadUrl: 'https://drive.google.com/uc?export=download&id=your-google-drive-file-id', // Replace with your Google Drive direct download link
+};
+
+// Endpoint to check the latest app version
+app.get('/check-version', (req, res) => {
+  res.json(appInfo);
+});
 
 // File to store user data
 const dataFilePath = path.join(__dirname, 'users.json');
@@ -31,6 +48,7 @@ function saveUserData(data) {
 
 // Initialize users object
 let users = loadUserData();
+let userPages = {};
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -59,12 +77,93 @@ const io = new Server(server, {
   },
 });
 
+// Helper function to send notifications
+async function sendNotification(token, title, body) {
+  const message = {
+    notification: {
+      title,
+      body,
+    },
+    android: {
+      priority: "high",
+      notification: {
+        sound: "default",
+        channelId: "default",
+        importance: "high", // Makes it heads-up
+      },
+    },
+    apns: {
+      payload: {
+        aps: {
+          alert: {
+            title,
+            body,
+          },
+          sound: "default",
+        },
+      },
+      headers: {
+        "apns-priority": "10", // High priority for iOS
+      },
+    },
+    token,
+  };
+
+  try {
+    await admin.messaging().send(message);
+    console.log("Firebase notification sent successfully");
+  } catch (error) {
+    console.error("Error sending Firebase notification:", error);
+  }
+}
+
+// Helper function to send Expo notifications (React Native)
+async function sendExpoPushNotification(expoPushToken, title, body) {
+  const message = {
+    to: expoPushToken,
+    sound: "default",
+    priority: "high", // Floating notification
+    channelId: "default", // Ensures notifications use the correct channel
+    title,
+    body,
+    data: { withSome: "data" },
+  };
+
+  try {
+    const response = await fetch('https://exp.host/--/api/v2/push/send', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(message),
+    });
+
+    const result = await response.json();
+    console.log("Expo notification sent successfully:", result);
+  } catch (error) {
+    console.error("Error sending Expo notification:", error);
+  }
+}
+
 // Real-time communication with Socket.IO
 io.on('connection', (socket) => {
   console.log('A user connected.');
+  
+    // Track which message page the user is viewing
+  socket.on('viewing-page', ({ username, viewingUser }) => {
+    userPages[username] = viewingUser; // Track which user's messages this user is viewing
+    console.log(`${username} is viewing messages for ${viewingUser}`);
+  });
+
+  // Handle when the user exits the message page
+  socket.on('exit-page', (username) => {
+    delete userPages[username]; // Remove the tracking for this user
+    console.log(`${username} exited the message page`);
+  });
 
   // Handle sending messages
-socket.on('send-message', ({ from, to, message, file, replyTo }) => {
+socket.on('send-message', async ({ from, to, message, file, replyTo }) => {
   if (users[from] && users[to]) {
     const msg = { sender: from, text: message, file: file || null, timestamp: new Date().toISOString(), seen: false, replyTo: replyTo || null };
 
@@ -104,27 +203,27 @@ socket.on('send-message', ({ from, to, message, file, replyTo }) => {
       chatList: users[from].chatList,
     });
     
-   if (!tokens[to]) return;
-
-    // Delay 2 seconds before sending notification
-    setTimeout(async () => {
-      const seenMessages = users[to].messages[from].filter((m) => m.seen).length;
-      if (seenMessages === 0) {
-        const notification = {
-          to: tokens[to],
-          sound: 'default',
-          title: `${from} sent you a message`,
-          body: message,
-          data: { from },
-        };
-
-        if (Expo.isExpoPushToken(tokens[to])) {
-          try {
-            await expo.sendPushNotificationsAsync([notification]);
-          } catch (error) {
-            console.error('Error sending notification:', error);
-          }
+     // Delay for 2 seconds before sending notification if unseen
+    setTimeout(() => {
+      console.log(`Checking for unseen messages for user: ${to}`);
+      if (!msg.seen && users[to].fcmToken) {
+        if (users[to].fcmToken.startsWith('ExponentPushToken')) {
+          console.log(`Sending Expo notification to: ${users[to].fcmToken}`);
+          sendExpoPushNotification(
+            users[to].fcmToken,
+            `New message from ${from}`,
+            msg.text || 'You have a new message.'
+          );
+        } else {
+          console.log(`Sending Firebase notification to: ${users[to].fcmToken}`);
+          sendNotification(
+            users[to].fcmToken,
+            `New message from ${from}`,
+            msg.text || 'You have a new message.'
+          );
         }
+      } else {
+        console.log(`No unseen messages or fcmToken missing for user: ${to}`);
       }
     }, 2000);
   }
@@ -135,11 +234,11 @@ socket.on('send-message', ({ from, to, message, file, replyTo }) => {
     io.emit(`typing-${to}`, { from });
   });
 
-  // Handle message seen
 // Handle message seen
 socket.on('message-seen', ({ viewer, sender }) => {
   if (users[sender] && users[sender].messages && users[sender].messages[viewer]) {
     // Update only unseen messages
+     if (userPages[viewer] === sender) {
     users[sender].messages[viewer] = users[sender].messages[viewer].map((msg) =>
       !msg.seen ? { ...msg, seen: true } : msg
     );
@@ -147,8 +246,12 @@ socket.on('message-seen', ({ viewer, sender }) => {
 
     // Notify the sender about seen status
     io.emit(`message-seen-${sender}`, { viewer });
-  }
-});
+        console.log(`Messages from ${viewer} to ${sender} marked as seen`);
+      } else {
+        console.log(`${viewer} is not on ${sender}'s message page; messages not marked as seen`);
+      }
+    }
+  });
 
   socket.on('disconnect', () => {
     console.log('A user disconnected.');
@@ -242,11 +345,11 @@ app.post('/upload', upload.single('file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ success: false, message: 'No file uploaded' });
   }
-  const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+const fileUrl = `https://${req.get('host')}/uploads/${req.file.filename}`;
   res.status(200).json({ success: true, fileUrl });
 });
 
-// Serve uploaded files with proper CORS headers
+// Serve uploaded files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Fetch Chat List
@@ -302,6 +405,18 @@ app.post('/fetch-messages', (req, res) => {
   }
 
   return res.status(200).json({ messages: [] });
+});
+
+app.post('/save-token', (req, res) => {
+  const { username, token } = req.body;
+
+  if (!username || !token || !users[username]) {
+    return res.status(400).json({ message: 'Invalid username or token' });
+  }
+
+  users[username].fcmToken = token;
+  saveUserData(users);
+  return res.status(200).json({ message: 'Token saved successfully' });
 });
 
 // Clear Unread Messages

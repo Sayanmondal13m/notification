@@ -6,34 +6,28 @@ import {
   TouchableOpacity,
   FlatList,
   Alert,
+  Platform,
+  Linking,
 } from 'react-native';
+import * as FileSystem from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import io from 'socket.io-client';
-import { requestUserPermission, getToken, onMessageListener } from '../../firebaseConfig';
+
 import styles from './ChatScreenStyle';
 
 const socket = io('https://rust-mammoth-route.glitch.me'); // Replace with your backend server URL
+const APP_VERSION = '1.0.0'; // Hardcoded app version
 
 export default function ChatScreen() {
   const [username, setUsername] = useState('');
   const [searchUsername, setSearchUsername] = useState('');
   const [searchResult, setSearchResult] = useState(null);
+  const [showUpdateButton, setShowUpdateButton] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState({});
   const [chatList, setChatList] = useState([]);
   const navigation = useNavigation();
-
-  useEffect(() => {
-    const checkPermission = async () => {
-      const hasPermission = await requestUserPermission();
-      if (hasPermission) {
-        await getToken(username); // Pass the username
-      }
-    };
-    checkPermission();
-  
-    onMessageListener(); // Listen for real-time notifications
-  }, []);
 
   useEffect(() => {
     const initializeChat = async () => {
@@ -79,6 +73,37 @@ export default function ChatScreen() {
       console.error('Error fetching chat list:', err);
     }
   };
+
+  useEffect(() => {
+    const checkVersion = async () => {
+      try {
+        const response = await fetch('https://rust-mammoth-route.glitch.me/check-version');
+        const data = await response.json();
+
+        if (data.latestVersion !== APP_VERSION) {
+          setShowUpdateButton(true);
+          setUpdateInfo(data);
+        }
+      } catch (error) {
+        console.error('Error checking version:', error);
+      }
+    };
+
+    checkVersion();
+  }, []);
+
+  const handleUpdate = () => {
+    if (!updateInfo.downloadUrl) {
+      Alert.alert('Error', 'Download URL is not available.');
+      return;
+    }
+  
+    Linking.openURL(updateInfo.downloadUrl)
+      .catch((err) => {
+        console.error('Failed to open link:', err);
+        Alert.alert('Error', 'Unable to open the download link.');
+      });
+  };  
 
   const handleLogout = async () => {
     await AsyncStorage.removeItem('username');
@@ -176,6 +201,14 @@ export default function ChatScreen() {
             <Text style={styles.logoutText}>Logout</Text>
           </TouchableOpacity>
         </View>
+        {showUpdateButton && (
+        <TouchableOpacity
+          style={styles.updateButton}
+          onPress={handleUpdate}
+        >
+          <Text style={styles.updateButtonText}>Update</Text>
+        </TouchableOpacity>
+      )}
       </View>
 
       {/* Search Section */}
